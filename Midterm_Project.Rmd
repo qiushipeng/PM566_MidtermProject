@@ -1,0 +1,176 @@
+---
+title: "Infectious Diseases by Disease, County, Year, and Sex"
+author: "Qiushi Peng"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Import libraries
+```{r}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+```
+
+# Introduction
+
+The dataset, called *Infectious Diseases by Disease, County, Year, and Sex*, is downloaded from [California Health and Human Services Open Data Portal](https://data.chhs.ca.gov/).
+
+This dataset contains case counts and rates by disease, county, year, and sex for selected infectious diseases that met the surveillance case definition in California. There are 9 columns in the dataset: *Disease*, *County*, *Year*, *Sex*, *Cases*,	*Population*,	*Rate*,	*Lower_95_\_CI*, and *Upper_95_\_CI*. There are 167,974 rows. The data represent cases with an estimated illness onset date from 2001 through the last year indicated from California Confidential Morbidity Reports and/or Laboratory Reports. Data captured represent reportable case counts as of the date indicated in the “Temporal Coverage” section below, so the data presented may differ from previous publications due to delays inherent to case reporting, laboratory reporting, and epidemiologic investigation.
+
+After looking at the whole dataset, we formed two questions:
+We would like to know the infectious diseases with the highest prevalence, and in which year the diseases had a highest infection rate. In that year, did the diseases spread evenly across the whole state? Is there a significant difference in infection rates between males and females?
+
+
+
+# Methods
+
+### 1. Data acquisition
+
+Data was downloaded from "https://data.chhs.ca.gov/dataset/infectious-disease".
+```{r readin-data}
+diseases <- data.table::fread("odp_idb_2020_ddg_compliant.csv")
+```
+
+Geographical data was downloaded from "https://public.opendatasoft.com/explore/dataset/us-county-boundaries/export/?disjunctive.statefp&disjunctive.countyfp&disjunctive.name&disjunctive.namelsad&disjunctive.stusab&disjunctive.state_name&refine.stusab=CA".
+```{r}
+CA_geo <- data.table::fread("us-county-boundaries.csv")
+CA_geo <- CA_geo[,.(NAME, INTPTLAT, INTPTLON)]
+```
+
+
+### 2. Data cleaning and wrangling
+
+Merge *diseasaes* and *CA_geo*.
+```{r}
+diseases <- 
+  merge(x = diseases,
+      y = CA_geo,
+      by.x = "County",
+      by.y = "NAME",
+      all.x = TRUE,
+      alL.Y = FALSE)
+```
+
+
+The dataset has 6 columns. Among them, columns "Cases" and "Rate" have several missing values because of "Scoring Criteria" prevent them from being publicated. Thus, we can remove them.
+
+Remove NA rows.
+```{r}
+diseases <- filter(diseases, !is.na(Cases))
+diseases$Rate[which(diseases$Rate == "-")] <- NA
+diseases$Rate[which(diseases$Rate == "-")] <- NA
+diseases <- filter(diseases, !is.na(Rate))
+```
+
+The data type of column "Rate" is *chr*, which we do not want it to be. Thus, we change the data type to *num*.
+```{r}
+diseases[ , Rate := gsub("\\*", "", Rate)]
+diseases[ , Rate := as.numeric(Rate)]
+```
+
+
+
+The "County" column includes rows called "California", which is the state not a county, so we delete them. We saved the aggregate "California" data into a new variable "Cal".
+```{r}
+Cal <- diseases[County == "California"]
+diseases <- diseases[County != "California"]
+```
+
+
+
+# Preliminary Results
+
+### Summary Table
+```{r}
+table_sex <- Cal[ , .(
+  NumofDiseases = length(Cases),
+  Cases_avg = round(mean(Cases, na.rm = TRUE)),
+  Cases_sd = sd(Cases, na.rm = TRUE),
+  Rate_avg = mean(Rate, na.rm = TRUE),
+  Rate_sd = sd(Rate, na.rm = TRUE)
+  ), by = .(Year, Sex)]
+knitr::kable(table_sex, col.names = c("Year", "Sex", "Count of Diseases", "Cases Avg", "Cases SD", "Rate Avg", "Rate SD"))
+```
+
+
+We made a line plot to show rate of each infectious disease from 2001 to 2020.
+```{r}
+ggplot(data = Cal[Sex == "Total"], mapping = aes(x = Year, y = Rate, colour = Disease)) + geom_line() + geom_point() + 
+  theme(legend.position = "bottom", legend.text = element_text(size = 3.5), legend.title = element_text(size = 3), 
+        axis.text = element_text(size = 8), axis.title = element_text(size = 8)) +
+  scale_x_continuous(breaks = seq(2001, 2020, 1)) +
+  labs(y = "Rate(%)", title = "Line plot of rate of each infectious disease from 2001 to 2020") 
+```
+
+From the plot, we can see that *Campylobacteriosis*, *Salmonellosis*, *Giardiasis*, *Shigellosis*, and *Coccidioidomycosis* always have a high infection rate from 2001 to 2020. We also notice that *Shiga toxin-producing E. coli (STEC) without HUS* rate has increased a lot since 2011.
+
+Let's look further at the disease with the highest infection rate -- *Campylobacteriosis*.
+```{r}
+ggplot() + 
+  geom_boxplot(data = diseases[Sex == "Total" & Disease == "Campylobacteriosis"], mapping = aes(y = Rate, x = Year, group = Year)) +
+  scale_x_continuous(breaks = seq(2001, 2020, 1)) +
+  labs(y = "Rate(%)", title = "Boxplot of infection rate of Campylobacteriosis from 2001 to 2020") 
+```
+
+From the plot, we can see that infection rate of **Campylobacteriosis** is high in 2019.
+
+Let's look at the disease in each county in 2019.
+
+```{r}
+ggplot() + 
+  geom_bar(data = diseases[Sex == "Total" & Disease == "Campylobacteriosis" & Year == 2019], mapping = aes(x = County, y = Rate), stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7)) +
+  labs(y = "Rate(%)", title = "Barplot of infection rate of Campylobacteriosis in different counties in 2019") 
+```
+
+From the plot, we can see that **San Benito** has a highest infection rate of **Campylobacteriosis** in 2019. Alpine has the lowest infection rate.
+
+Let see the data in a map view to see if there is a geographical factor playing a role.
+
+```{r}
+library(leaflet)
+SB_2019 <- diseases[Sex == "Total" & Disease == "Campylobacteriosis" & Year == 2019]
+SB_2019_pal <- colorNumeric(c('darkgreen','goldenrod','brown'), domain = SB_2019$Rate)
+
+leaflet(SB_2019) %>% 
+  addProviderTiles('CartoDB.Positron') %>% 
+  addCircles(
+    lat = ~INTPTLAT, lng=~INTPTLON,
+    label = ~paste0(Rate), color = ~ SB_2019_pal(Rate),
+    opacity = 1, fillOpacity = 1, radius = 500
+    ) %>%
+  addLegend('bottomleft', pal = SB_2019_pal, values = SB_2019$Rate,
+          title = 'Infection Rate (%)', opacity = 1) %>%
+  addControl("Leaflet map of the infection rate of Campylobacteriosis in 2019", position = "topright")
+```
+
+
+
+
+We made a table to see that if infection rates are the same for different genders.
+```{r}
+Camp_County_2019 <- diseases[Disease == "Campylobacteriosis" & County == "San Benito" & Year == 2019][, .(Sex, Cases, Population, Rate)]
+knitr::kable(Camp_County_2019)
+```
+
+Chi-square test.
+```{r}
+library(stats)
+contingency_table <- matrix(c(19,20,31089,30923), nrow = 2, ncol = 2)
+chisq.test(contingency_table)
+```
+
+There is not a significant difference between male and female for the infection rate of Campylobacteriosis in San Benito in 2019 (p = 0.9867).
+
+
+### Conclusion
+
+1. *Campylobacteriosis*, *Salmonellosis*, *Giardiasis*, *Shigellosis*, and *Coccidioidomycosis* always have a higher infection rate from 2001 to 2020 than other infectious diseases. *Shiga toxin-producing E. coli (STEC) without HUS* infection rate has increased significantly a lot since 2011.
+2. *San Benito* had a very high infection rate of *Campylobacteriosis* in 2019, which is more than 60%.
+3. There is not a significant difference between male and female for the infection rate of Campylobacteriosis in San Benito in 2019.
+4. Counties around San Francisco had a higher infection rate of Campylobacteriosis in 2019. Inland area had relatively lower infection rate of Campylobacteriosis.
+
+### Reference
+
+1. California Department of Public Health, Center for Infectious Diseases, Infectious Diseases Branch, Surveillance and Statistics Section, 2001-2020. Infectious-Diseases-by-Disease-County-Year-Sex.csv
